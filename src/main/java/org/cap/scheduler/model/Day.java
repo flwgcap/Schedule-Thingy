@@ -29,4 +29,16 @@ public class Day {
         return time;
     }
 
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
+
+    public String getName() { return name; }
+    public void setName(String name) { this.name = name; }
+
+    public LocalTime getStartTime() { return startTime; }
+    public void setStartTime(LocalTime startTime) { this.startTime = startTime; }
+
+    public List<Block> getBlocks() { return blocks; }
+    public void setBlocks(List<Block> blocks) { this.blocks = blocks; }
+
 }
