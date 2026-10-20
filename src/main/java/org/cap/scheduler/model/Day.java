@@ -29,6 +29,14 @@ public class Day {
         return time;
     }
 
+        public List<LocalTime> getComputedStartTimes() {
+        List<LocalTime> times = new ArrayList<>();
+        for (int i = 0; i < blocks.size(); i++) {
+            times.add(getStartTimeOf(i));
+        }
+        return times;
+    }
+
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
 
