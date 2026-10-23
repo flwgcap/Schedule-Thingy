@@ -50,8 +50,8 @@
     <h3>Schedules</h3>
     <ul id="schedule-list"></ul>
     <button onclick="newSchedule()">+ New schedule</button>
-    <button onclick="document.getElementById('import-file').click()">Import from file</button>
-    <input type="file" id="import-file" accept=".json,application/json" style="display:none" onchange="importFromInput(this)">
+    <button onclick="document.getElementById('import-file').click()">Import from Excel</button>
+    <input type="file" id="import-file" accept=".xlsx" style="display:none" onchange="importFromInput(this)">
   </div>
   <div id="editor"></div>
   <div id="main"></div>
@@ -278,15 +278,20 @@
       renderMain();
     }
 
-    // ---------- export / import ----------
-    function exportSchedule() {
-      const data = { format: 'cap-scheduler', version: 1, schedule: cleanSchedule(current) };
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    // ---------- export / import (Excel) ----------
+    async function exportSchedule() {
+      const res = await fetch('/api/schedules/export', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify(cleanSchedule(current))
+      });
+      if (!res.ok) { alert('Export failed (error ' + res.status + ').'); return; }
+      const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const fileName = (current.name || 'schedule').replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '') || 'schedule';
       const a = document.createElement('a');
       a.href = url;
-      a.download = fileName + '.json';
+      a.download = fileName + '.xlsx';
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -299,42 +304,12 @@
       if (file) importSchedule(file);
     }
 
-    function cleanTime(t) {
-      if (typeof t === 'string' && /^\d{1,2}:\d{2}/.test(t)) {
-        return minutesToTime(timeToMinutes(t)) + ':00';
-      }
-      return '06:00:00';
-    }
-
     async function importSchedule(file) {
       try {
-        if (file.size > 1000000) throw new Error('That file is too large.');
-        const data = JSON.parse(await file.text());
-        const s = data && data.schedule;
-        if (!data || data.format !== 'cap-scheduler' || !s || !Array.isArray(s.days) || s.days.length === 0) {
-          throw new Error('This does not look like a CAP Scheduler file.');
-        }
-        // Rebuild the schedule field by field instead of trusting the file as-is
-        const clean = {
-          name: String(s.name || 'Imported schedule'),
-          days: s.days.map(d => ({
-            name: String(d.name || ''),
-            startTime: cleanTime(d.startTime),
-            blocks: (Array.isArray(d.blocks) ? d.blocks : []).map(b => ({
-              title: String(b.title || ''),
-              durationMinutes: Math.max(0, Number(b.durationMinutes) || 0),
-              location: String(b.location || ''),
-              poc: String(b.poc || ''),
-              notes: String(b.notes || '')
-            }))
-          }))
-        };
-        const res = await fetch('/api/schedules', {
-          method: 'POST',
-          headers: JSON_HEADERS,
-          body: JSON.stringify(clean)
-        });
-        if (!res.ok) throw new Error('The server rejected the file (error ' + res.status + ').');
+        const form = new FormData();
+        form.append('file', file);
+        const res = await fetch('/api/schedules/import', { method: 'POST', body: form });
+        if (!res.ok) throw new Error((await res.text()) || ('error ' + res.status));
         const saved = await res.json();
         await loadSchedules();
         selectSchedule(schedules.find(x => x.id === saved.id));
@@ -445,7 +420,7 @@
       saveBtn.onclick = save;
       const dupBtn = el('button', 'Duplicate');
       dupBtn.onclick = duplicateSchedule;
-      const exportBtn = el('button', 'Export');
+      const exportBtn = el('button', 'Export to Excel');
       exportBtn.onclick = exportSchedule;
       const delBtn = el('button', 'Delete schedule', 'danger');
       delBtn.onclick = deleteSchedule;
