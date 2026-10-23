@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>CAP Scheduler</title>
+  <style>
+    body { font-family: sans-serif; margin: 0; display: flex; height: 100vh; }
+    #sidebar { width: 240px; background: #f0f2f5; padding: 12px; border-right: 1px solid #ccc; overflow-y: auto; }
+    #sidebar ul { list-style: none; padding: 0; }
+    #sidebar li { padding: 8px; cursor: pointer; border-radius: 4px; }
+    #sidebar li:hover { background: #dde3ea; }
+    #main { flex: 1; padding: 20px; overflow-y: auto; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 24px; }
+    th, td { border: 1px solid #ccc; padding: 6px 10px; text-align: left; }
+    th { background: #1f3a68; color: white; }
+  </style>
+</head>
+<body>
+  <div id="sidebar">
+    <h3>Schedules</h3>
+    <ul id="schedule-list"></ul>
+    <button onclick="addSample()">Add sample schedule</button>
+  </div>
+  <div id="main"><p>Select a schedule on the left.</p></div>
+
+  <script>
+    function el(tag, text) {
+      const e = document.createElement(tag);
+      if (text !== undefined && text !== null) e.textContent = text;
+      return e;
+    }
+
+    function fmt(time) {
+      return time.slice(0, 5); // "06:30:00" -> "06:30"
+    }
+
+    async function loadSchedules() {
+      const res = await fetch('/api/schedules');
+      const schedules = await res.json();
+      const list = document.getElementById('schedule-list');
+      list.innerHTML = '';
+      schedules.forEach(s => {
+        const li = el('li', s.name);
+        li.onclick = () => showSchedule(s);
+        list.appendChild(li);
+      });
+    }
+
+    function showSchedule(schedule) {
+      const main = document.getElementById('main');
+      main.innerHTML = '';
+      main.appendChild(el('h1', schedule.name));
+
+      schedule.days.forEach(day => {
+        main.appendChild(el('h2', day.name));
+        const table = el('table');
+
+        const header = el('tr');
+        ['Time', 'Activity', 'Minutes', 'Location', 'POC'].forEach(h => header.appendChild(el('th', h)));
+        table.appendChild(header);
+
+        day.blocks.forEach((block, i) => {
+          const row = el('tr');
+          row.appendChild(el('td', fmt(day.computedStartTimes[i])));
+          row.appendChild(el('td', block.title));
+          row.appendChild(el('td', block.durationMinutes));
+          row.appendChild(el('td', block.location || ''));
+          row.appendChild(el('td', block.poc || ''));
+          table.appendChild(row);
+        });
+
+        main.appendChild(table);
+      });
+    }
+
+    async function addSample() {
+      const sample = {
+        name: 'Sample Weekend',
+        days: [{
+          name: 'Saturday',
+          startTime: '06:00:00',
+          blocks: [
+            { title: 'Reveille', durationMinutes: 30 },
+            { title: 'Breakfast', durationMinutes: 45 },
+            { title: 'Drill', durationMinutes: 60 },
+            { title: 'Classes', durationMinutes: 90 }
+          ]
+        }]
+      };
+      await fetch('/api/schedules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(sample)
+      });
+      loadSchedules();
+    }
+
+    loadSchedules();
+  </script>
+</body>
+</html>
