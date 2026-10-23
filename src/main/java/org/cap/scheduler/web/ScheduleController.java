@@ -17,7 +17,7 @@ public class ScheduleController {
         this.repository = repository;
     }
 
-        @GetMapping
+    @GetMapping
     public List<Schedule> list() {
         return repository.findAll();
     }
@@ -32,6 +32,17 @@ public class ScheduleController {
     @PostMapping
     public Schedule create(@RequestBody Schedule schedule) {
         return repository.save(schedule);
+    }
+
+    @PutMapping("/{id}")
+    public ResponseEntity<Schedule> update(@PathVariable Long id, @RequestBody Schedule schedule) {
+        return repository.findById(id)
+                .map(existing -> {
+                    schedule.setId(id);
+                    schedule.setOwnerId(existing.getOwnerId()); // keep the owner, ready for accounts later
+                    return ResponseEntity.ok(repository.save(schedule));
+                })
+                .orElse(ResponseEntity.notFound().build());
     }
 
     @DeleteMapping("/{id}")

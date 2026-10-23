@@ -4,68 +4,347 @@
   <meta charset="UTF-8">
   <title>CAP Scheduler</title>
   <style>
+    * { box-sizing: border-box; }
     body { font-family: sans-serif; margin: 0; display: flex; height: 100vh; }
-    #sidebar { width: 240px; background: #f0f2f5; padding: 12px; border-right: 1px solid #ccc; overflow-y: auto; }
-    #sidebar ul { list-style: none; padding: 0; }
-    #sidebar li { padding: 8px; cursor: pointer; border-radius: 4px; }
-    #sidebar li:hover { background: #dde3ea; }
+    h1, h2, h3, h4 { margin-top: 0; }
+    #list { width: 200px; background: #f0f2f5; padding: 12px; border-right: 1px solid #ccc; overflow-y: auto; }
+    #list ul { list-style: none; padding: 0; margin: 8px 0; }
+    #list li { padding: 8px; cursor: pointer; border-radius: 4px; }
+    #list li:hover { background: #dde3ea; }
+    #list li.active { background: #1f3a68; color: white; }
+    #editor { width: 340px; background: #fafafa; padding: 12px; border-right: 1px solid #ccc; overflow-y: auto; }
     #main { flex: 1; padding: 20px; overflow-y: auto; }
+    label { display: block; font-size: 12px; color: #555; margin: 10px 0 2px; }
+    input, select { width: 100%; padding: 5px; font-size: 14px; }
+    .row { display: flex; gap: 6px; margin-bottom: 6px; }
+    .row input { min-width: 0; }
+    .row .narrow { width: 80px; flex: none; }
+    .block { border: 1px solid #ccc; background: white; border-radius: 4px; padding: 8px; margin: 8px 0; }
+    button { padding: 6px 10px; cursor: pointer; }
+    .status { font-size: 13px; color: #666; margin: 8px 0; }
+    .danger { color: #b00020; }
     table { border-collapse: collapse; width: 100%; margin-bottom: 24px; }
     th, td { border: 1px solid #ccc; padding: 6px 10px; text-align: left; }
     th { background: #1f3a68; color: white; }
   </style>
 </head>
 <body>
-  <div id="sidebar">
+  <div id="list">
     <h3>Schedules</h3>
     <ul id="schedule-list"></ul>
-    <button onclick="addSample()">Add sample schedule</button>
+    <button onclick="newSchedule()">+ New schedule</button>
   </div>
-  <div id="main"><p>Select a schedule on the left.</p></div>
+  <div id="editor"></div>
+  <div id="main"></div>
 
   <script>
-    function el(tag, text) {
+    const JSON_HEADERS = { 'Content-Type': 'application/json' };
+    let schedules = [];   // everything the server has
+    let current = null;   // working copy of the schedule being edited
+    let dayIndex = 0;     // which day the editor panel is showing
+    let status = '';
+
+    // ---------- small helpers ----------
+    function el(tag, text, cls) {
       const e = document.createElement(tag);
       if (text !== undefined && text !== null) e.textContent = text;
+      if (cls) e.className = cls;
       return e;
     }
 
-    function fmt(time) {
-      return time.slice(0, 5); // "06:30:00" -> "06:30"
+    function labeled(text, input) {
+      const wrap = document.createElement('div');
+      wrap.appendChild(el('label', text));
+      wrap.appendChild(input);
+      return wrap;
     }
 
+    function textInput(value, onChange, placeholder) {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = value || '';
+      if (placeholder) input.placeholder = placeholder;
+      input.oninput = () => onChange(input.value);
+      return input;
+    }
+
+    function numberInput(value, onChange) {
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.min = 0;
+      input.step = 5;
+      input.value = value;
+      input.oninput = () => onChange(Number(input.value) || 0);
+      return input;
+    }
+
+    // ---------- time math (live preview; the server does the same math when saved) ----------
+    function timeToMinutes(t) {
+      const parts = t.split(':');
+      return parseInt(parts[0]) * 60 + parseInt(parts[1]);
+    }
+
+    function minutesToTime(total) {
+      total = ((total % 1440) + 1440) % 1440;
+      const h = Math.floor(total / 60);
+      const m = total % 60;
+      return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+    }
+
+    function computeTimes(day) {
+      const out = [];
+      let t = timeToMinutes(day.startTime || '06:00');
+      day.blocks.forEach(b => {
+        out.push(minutesToTime(t));
+        t += Number(b.durationMinutes) || 0;
+      });
+      return out;
+    }
+
+    // ---------- loading ----------
     async function loadSchedules() {
       const res = await fetch('/api/schedules');
-      const schedules = await res.json();
-      const list = document.getElementById('schedule-list');
-      list.innerHTML = '';
+      schedules = await res.json();
+      renderList();
+    }
+
+    function selectSchedule(s) {
+      current = JSON.parse(JSON.stringify(s)); // copy, so edits don't touch the list until saved
+      dayIndex = 0;
+      status = '';
+      renderList();
+      renderEditor();
+      renderMain();
+    }
+
+    async function newSchedule() {
+      const name = prompt('Schedule name?');
+      if (!name) return;
+      const res = await fetch('/api/schedules', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ name: name, days: [{ name: 'Day 1', startTime: '06:00:00', blocks: [] }] })
+      });
+      const saved = await res.json();
+      await loadSchedules();
+      selectSchedule(schedules.find(s => s.id === saved.id));
+    }
+
+    // ---------- changes ----------
+    function changed() {
+      status = 'Unsaved changes';
+      const s = document.getElementById('status');
+      if (s) s.textContent = status;
+      renderMain();
+    }
+
+    function addDay() {
+      current.days.push({ name: 'Day ' + (current.days.length + 1), startTime: '06:00', blocks: [] });
+      dayIndex = current.days.length - 1;
+      changed();
+      renderEditor();
+    }
+
+    function deleteDay() {
+      if (current.days.length === 1) { alert('A schedule needs at least one day.'); return; }
+      if (!confirm('Delete this day?')) return;
+      current.days.splice(dayIndex, 1);
+      dayIndex = Math.max(0, dayIndex - 1);
+      changed();
+      renderEditor();
+    }
+
+    function addBlock() {
+      current.days[dayIndex].blocks.push({ title: 'New block', durationMinutes: 30, location: '', poc: '' });
+      changed();
+      renderEditor();
+    }
+
+    function moveBlock(i, direction) {
+      const blocks = current.days[dayIndex].blocks;
+      const target = i + direction;
+      if (target < 0 || target >= blocks.length) return;
+      const moved = blocks.splice(i, 1)[0];
+      blocks.splice(target, 0, moved);
+      changed();
+      renderEditor();
+    }
+
+    function deleteBlock(i) {
+      current.days[dayIndex].blocks.splice(i, 1);
+      changed();
+      renderEditor();
+    }
+
+    async function save() {
+      const payload = JSON.parse(JSON.stringify(current));
+      payload.days.forEach(d => {
+        d.startTime = (d.startTime || '06:00').slice(0, 5) + ':00';
+      });
+      const res = await fetch('/api/schedules/' + current.id, {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) {
+        status = 'Save failed (error ' + res.status + ')';
+        document.getElementById('status').textContent = status;
+        return;
+      }
+      const saved = await res.json();
+      const keepDay = dayIndex;
+      await loadSchedules();
+      current = JSON.parse(JSON.stringify(saved));
+      dayIndex = Math.min(keepDay, current.days.length - 1);
+      status = 'Saved';
+      renderList();
+      renderEditor();
+      renderMain();
+    }
+
+    async function deleteSchedule() {
+      if (!confirm('Delete "' + current.name + '"?')) return;
+      await fetch('/api/schedules/' + current.id, { method: 'DELETE' });
+      current = null;
+      status = '';
+      await loadSchedules();
+      renderEditor();
+      renderMain();
+    }
+
+    // ---------- drawing ----------
+    function renderList() {
+      const ul = document.getElementById('schedule-list');
+      ul.innerHTML = '';
       schedules.forEach(s => {
-        const li = el('li', s.name);
-        li.onclick = () => showSchedule(s);
-        list.appendChild(li);
+        const li = el('li', s.name, current && current.id === s.id ? 'active' : '');
+        li.onclick = () => selectSchedule(s);
+        ul.appendChild(li);
       });
     }
 
-    function showSchedule(schedule) {
+    function renderEditor() {
+      const box = document.getElementById('editor');
+      box.innerHTML = '';
+      if (!current) {
+        box.appendChild(el('p', 'Select or create a schedule.'));
+        return;
+      }
+
+      box.appendChild(el('h3', 'Edit schedule'));
+      box.appendChild(labeled('Schedule name', textInput(current.name, v => { current.name = v; changed(); })));
+
+      const sel = document.createElement('select');
+      current.days.forEach((d, i) => {
+        const opt = el('option', d.name || ('Day ' + (i + 1)));
+        opt.value = i;
+        sel.appendChild(opt);
+      });
+      sel.value = dayIndex;
+      sel.onchange = () => { dayIndex = Number(sel.value); renderEditor(); };
+      box.appendChild(labeled('Day', sel));
+
+      const dayButtons = el('div', null, 'row');
+      const addDayBtn = el('button', '+ Day');
+      addDayBtn.onclick = addDay;
+      const delDayBtn = el('button', 'Delete day', 'danger');
+      delDayBtn.onclick = deleteDay;
+      dayButtons.appendChild(addDayBtn);
+      dayButtons.appendChild(delDayBtn);
+      box.appendChild(dayButtons);
+
+      const day = current.days[dayIndex];
+
+      box.appendChild(labeled('Day name', textInput(day.name, v => {
+        day.name = v;
+        sel.options[dayIndex].textContent = v || ('Day ' + (dayIndex + 1));
+        changed();
+      })));
+
+      const start = document.createElement('input');
+      start.type = 'time';
+      start.value = (day.startTime || '06:00').slice(0, 5);
+      start.oninput = () => { day.startTime = start.value; changed(); };
+      box.appendChild(labeled('Day start time', start));
+
+      box.appendChild(el('h4', 'Blocks'));
+      day.blocks.forEach((b, i) => {
+        const card = el('div', null, 'block');
+
+        const r1 = el('div', null, 'row');
+        r1.appendChild(textInput(b.title, v => { b.title = v; changed(); }, 'Activity'));
+        const mins = numberInput(b.durationMinutes, v => { b.durationMinutes = v; changed(); });
+        mins.className = 'narrow';
+        mins.title = 'Minutes';
+        r1.appendChild(mins);
+        card.appendChild(r1);
+
+        const r2 = el('div', null, 'row');
+        r2.appendChild(textInput(b.location, v => { b.location = v; changed(); }, 'Location'));
+        r2.appendChild(textInput(b.poc, v => { b.poc = v; changed(); }, 'POC'));
+        card.appendChild(r2);
+
+        const r3 = el('div', null, 'row');
+        const up = el('button', '\u2191');
+        up.disabled = i === 0;
+        up.onclick = () => moveBlock(i, -1);
+        const down = el('button', '\u2193');
+        down.disabled = i === day.blocks.length - 1;
+        down.onclick = () => moveBlock(i, 1);
+        const del = el('button', 'Remove', 'danger');
+        del.onclick = () => deleteBlock(i);
+        r3.appendChild(up);
+        r3.appendChild(down);
+        r3.appendChild(del);
+        card.appendChild(r3);
+
+        box.appendChild(card);
+      });
+
+      const addBlockBtn = el('button', '+ Add block');
+      addBlockBtn.onclick = addBlock;
+      box.appendChild(addBlockBtn);
+
+      box.appendChild(document.createElement('hr'));
+      const saveBtn = el('button', 'Save');
+      saveBtn.onclick = save;
+      const delBtn = el('button', 'Delete schedule', 'danger');
+      delBtn.onclick = deleteSchedule;
+      const actions = el('div', null, 'row');
+      actions.appendChild(saveBtn);
+      actions.appendChild(delBtn);
+      box.appendChild(actions);
+
+      const statusEl = el('div', status, 'status');
+      statusEl.id = 'status';
+      box.appendChild(statusEl);
+    }
+
+    function renderMain() {
       const main = document.getElementById('main');
       main.innerHTML = '';
-      main.appendChild(el('h1', schedule.name));
+      if (!current) {
+        main.appendChild(el('p', 'Select or create a schedule on the left.'));
+        return;
+      }
+      main.appendChild(el('h1', current.name));
 
-      schedule.days.forEach(day => {
+      current.days.forEach(day => {
         main.appendChild(el('h2', day.name));
+        const times = computeTimes(day);
         const table = el('table');
 
         const header = el('tr');
         ['Time', 'Activity', 'Minutes', 'Location', 'POC'].forEach(h => header.appendChild(el('th', h)));
         table.appendChild(header);
 
-        day.blocks.forEach((block, i) => {
+        day.blocks.forEach((b, i) => {
           const row = el('tr');
-          row.appendChild(el('td', fmt(day.computedStartTimes[i])));
-          row.appendChild(el('td', block.title));
-          row.appendChild(el('td', block.durationMinutes));
-          row.appendChild(el('td', block.location || ''));
-          row.appendChild(el('td', block.poc || ''));
+          row.appendChild(el('td', times[i]));
+          row.appendChild(el('td', b.title));
+          row.appendChild(el('td', b.durationMinutes));
+          row.appendChild(el('td', b.location || ''));
+          row.appendChild(el('td', b.poc || ''));
           table.appendChild(row);
         });
 
@@ -73,29 +352,9 @@
       });
     }
 
-    async function addSample() {
-      const sample = {
-        name: 'Sample Weekend',
-        days: [{
-          name: 'Saturday',
-          startTime: '06:00:00',
-          blocks: [
-            { title: 'Reveille', durationMinutes: 30 },
-            { title: 'Breakfast', durationMinutes: 45 },
-            { title: 'Drill', durationMinutes: 60 },
-            { title: 'Classes', durationMinutes: 90 }
-          ]
-        }]
-      };
-      await fetch('/api/schedules', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(sample)
-      });
-      loadSchedules();
-    }
-
     loadSchedules();
+    renderEditor();
+    renderMain();
   </script>
 </body>
 </html>
