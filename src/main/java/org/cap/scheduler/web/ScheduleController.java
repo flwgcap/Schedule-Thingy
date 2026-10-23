@@ -1,20 +1,27 @@
 package org.cap.scheduler.web;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.List;
 
 import org.cap.scheduler.model.Schedule;
 import org.cap.scheduler.repository.ScheduleRepository;
+import org.cap.scheduler.service.ExcelService;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 @RestController
 @RequestMapping("/api/schedules")
 public class ScheduleController {
 
     private final ScheduleRepository repository;
+    private final ExcelService excelService;
 
-    public ScheduleController(ScheduleRepository repository) {
+    public ScheduleController(ScheduleRepository repository, ExcelService excelService) {
         this.repository = repository;
+        this.excelService = excelService;
     }
 
     @GetMapping
@@ -52,5 +59,27 @@ public class ScheduleController {
         }
         repository.deleteById(id);
         return ResponseEntity.noContent().build();
+    }
+
+    // Builds an Excel file from the schedule the page sends (so unsaved edits are included)
+    @PostMapping("/export")
+    public ResponseEntity<byte[]> export(@RequestBody Schedule schedule) throws IOException {
+        byte[] bytes = excelService.export(schedule);
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType(
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                .body(bytes);
+    }
+
+    // Reads an uploaded Excel file and saves it as a new schedule
+    @PostMapping("/import")
+    public ResponseEntity<?> importExcel(@RequestParam("file") MultipartFile file) {
+        try (InputStream in = file.getInputStream()) {
+            Schedule imported = excelService.importSchedule(in, "Imported schedule");
+            return ResponseEntity.ok(repository.save(imported));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest()
+                    .body("Could not read that file. Use an .xlsx file exported from this app.");
+        }
     }
 }

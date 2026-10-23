@@ -12,6 +12,7 @@
     #list li { padding: 8px; cursor: pointer; border-radius: 4px; }
     #list li:hover { background: #dde3ea; }
     #list li.active { background: #1f3a68; color: white; }
+    #list button { display: block; width: 100%; margin-bottom: 6px; }
     #editor { width: 340px; background: #fafafa; padding: 12px; border-right: 1px solid #ccc; overflow-y: auto; }
     #main { flex: 1; padding: 20px; overflow-y: auto; }
     label { display: block; font-size: 12px; color: #555; margin: 10px 0 2px; }
@@ -26,6 +27,22 @@
     table { border-collapse: collapse; width: 100%; margin-bottom: 24px; }
     th, td { border: 1px solid #ccc; padding: 6px 10px; text-align: left; }
     th { background: #1f3a68; color: white; }
+
+    @page { size: letter; margin: 0.5in; }
+
+    @media print {
+      #list, #editor, .no-print { display: none !important; }
+      body { display: block; height: auto; }
+      #main { padding: 0; overflow: visible; }
+      th {
+        background: #1f3a68 !important;
+        color: white !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+      tr { page-break-inside: avoid; }
+      h2 { page-break-after: avoid; }
+    }
   </style>
 </head>
 <body>
@@ -33,6 +50,8 @@
     <h3>Schedules</h3>
     <ul id="schedule-list"></ul>
     <button onclick="newSchedule()">+ New schedule</button>
+    <button onclick="document.getElementById('import-file').click()">Import from file</button>
+    <input type="file" id="import-file" accept=".json,application/json" style="display:none" onchange="importFromInput(this)">
   </div>
   <div id="editor"></div>
   <div id="main"></div>
@@ -154,6 +173,53 @@
       renderEditor();
     }
 
+    function stripIds(day) {
+      delete day.id;
+      delete day.computedStartTimes;
+      day.blocks.forEach(b => delete b.id);
+    }
+
+    function duplicateDay() {
+      const copy = JSON.parse(JSON.stringify(current.days[dayIndex]));
+      stripIds(copy);
+      copy.name = (copy.name || 'Day') + ' (copy)';
+      current.days.splice(dayIndex + 1, 0, copy);
+      dayIndex = dayIndex + 1;
+      changed();
+      renderEditor();
+    }
+
+    // A clean copy of a schedule with no database IDs, safe to save as a new schedule or export
+    function cleanSchedule(s) {
+      return {
+        name: s.name || 'Untitled',
+        days: s.days.map(d => ({
+          name: d.name || '',
+          startTime: (d.startTime || '06:00').slice(0, 5) + ':00',
+          blocks: d.blocks.map(b => ({
+            title: b.title || '',
+            durationMinutes: Number(b.durationMinutes) || 0,
+            location: b.location || '',
+            poc: b.poc || '',
+            notes: b.notes || ''
+          }))
+        }))
+      };
+    }
+
+    async function duplicateSchedule() {
+      const copy = cleanSchedule(current);
+      copy.name = current.name + ' (copy)';
+      const res = await fetch('/api/schedules', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify(copy)
+      });
+      const saved = await res.json();
+      await loadSchedules();
+      selectSchedule(schedules.find(s => s.id === saved.id));
+    }
+
     function addBlock() {
       current.days[dayIndex].blocks.push({ title: 'New block', durationMinutes: 30, location: '', poc: '' });
       changed();
@@ -212,6 +278,71 @@
       renderMain();
     }
 
+    // ---------- export / import ----------
+    function exportSchedule() {
+      const data = { format: 'cap-scheduler', version: 1, schedule: cleanSchedule(current) };
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const fileName = (current.name || 'schedule').replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '') || 'schedule';
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName + '.json';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function importFromInput(input) {
+      const file = input.files[0];
+      input.value = ''; // so choosing the same file twice still works
+      if (file) importSchedule(file);
+    }
+
+    function cleanTime(t) {
+      if (typeof t === 'string' && /^\d{1,2}:\d{2}/.test(t)) {
+        return minutesToTime(timeToMinutes(t)) + ':00';
+      }
+      return '06:00:00';
+    }
+
+    async function importSchedule(file) {
+      try {
+        if (file.size > 1000000) throw new Error('That file is too large.');
+        const data = JSON.parse(await file.text());
+        const s = data && data.schedule;
+        if (!data || data.format !== 'cap-scheduler' || !s || !Array.isArray(s.days) || s.days.length === 0) {
+          throw new Error('This does not look like a CAP Scheduler file.');
+        }
+        // Rebuild the schedule field by field instead of trusting the file as-is
+        const clean = {
+          name: String(s.name || 'Imported schedule'),
+          days: s.days.map(d => ({
+            name: String(d.name || ''),
+            startTime: cleanTime(d.startTime),
+            blocks: (Array.isArray(d.blocks) ? d.blocks : []).map(b => ({
+              title: String(b.title || ''),
+              durationMinutes: Math.max(0, Number(b.durationMinutes) || 0),
+              location: String(b.location || ''),
+              poc: String(b.poc || ''),
+              notes: String(b.notes || '')
+            }))
+          }))
+        };
+        const res = await fetch('/api/schedules', {
+          method: 'POST',
+          headers: JSON_HEADERS,
+          body: JSON.stringify(clean)
+        });
+        if (!res.ok) throw new Error('The server rejected the file (error ' + res.status + ').');
+        const saved = await res.json();
+        await loadSchedules();
+        selectSchedule(schedules.find(x => x.id === saved.id));
+      } catch (err) {
+        alert('Import failed: ' + err.message);
+      }
+    }
+
     // ---------- drawing ----------
     function renderList() {
       const ul = document.getElementById('schedule-list');
@@ -247,10 +378,14 @@
       const dayButtons = el('div', null, 'row');
       const addDayBtn = el('button', '+ Day');
       addDayBtn.onclick = addDay;
+      const dupDayBtn = el('button', 'Duplicate day');
+      dupDayBtn.onclick = duplicateDay;
       const delDayBtn = el('button', 'Delete day', 'danger');
       delDayBtn.onclick = deleteDay;
       dayButtons.appendChild(addDayBtn);
+      dayButtons.appendChild(dupDayBtn);
       dayButtons.appendChild(delDayBtn);
+      dayButtons.style.flexWrap = 'wrap';
       box.appendChild(dayButtons);
 
       const day = current.days[dayIndex];
@@ -308,11 +443,18 @@
       box.appendChild(document.createElement('hr'));
       const saveBtn = el('button', 'Save');
       saveBtn.onclick = save;
+      const dupBtn = el('button', 'Duplicate');
+      dupBtn.onclick = duplicateSchedule;
+      const exportBtn = el('button', 'Export');
+      exportBtn.onclick = exportSchedule;
       const delBtn = el('button', 'Delete schedule', 'danger');
       delBtn.onclick = deleteSchedule;
       const actions = el('div', null, 'row');
       actions.appendChild(saveBtn);
+      actions.appendChild(dupBtn);
+      actions.appendChild(exportBtn);
       actions.appendChild(delBtn);
+      actions.style.flexWrap = 'wrap';
       box.appendChild(actions);
 
       const statusEl = el('div', status, 'status');
@@ -327,6 +469,11 @@
         main.appendChild(el('p', 'Select or create a schedule on the left.'));
         return;
       }
+
+      const printBtn = el('button', 'Print', 'no-print');
+      printBtn.onclick = () => window.print();
+      printBtn.style.float = 'right';
+      main.appendChild(printBtn);
       main.appendChild(el('h1', current.name));
 
       current.days.forEach(day => {
